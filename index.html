@@ -388,31 +388,45 @@ function showDots(){
 function hideDots(){const e=document.getElementById('td');if(e)e.remove();}
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
-async function gemini(contents){
-  const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${KEY}`;
-  const res=await fetch(url,{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({
-      system_instruction:{parts:[{text:SYS}]},
-      contents,
-      generationConfig:{maxOutputTokens:1500,temperature:0.4}
-    })
-  });
-  const data=await res.json();
+const MODELS=['gemini-2.0-flash','gemini-2.0-flash-lite','gemini-1.5-flash','gemini-1.5-flash-8b'];
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+
+async function gemini(contents,mIdx=0,attempt=0){
+  const model=MODELS[mIdx]||MODELS[0];
+  const url=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${KEY}`;
+  let res,data;
+  try{
+    res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({system_instruction:{parts:[{text:SYS}]},contents,generationConfig:{maxOutputTokens:1500,temperature:0.4}})});
+    data=await res.json();
+  }catch(e){
+    if(attempt<2){await sleep(2000);return gemini(contents,mIdx,attempt+1);}
+    throw new Error('Network error. Check your connection and try again.');
+  }
   if(data.error){
-    if(data.error.code===400||data.error.status==='INVALID_ARGUMENT'){
-      // Could be bad key or unsupported file
-      if(data.error.message.includes('API_KEY')||data.error.message.includes('key')){
-        localStorage.removeItem('dd_gkey'); KEY='';
-        throw new Error('Invalid API key. Please re-enter your Gemini API key.');
-      }
+    const code=data.error.code, msg=data.error.message||'';
+    if(code===400&&(msg.toLowerCase().includes('api key')||msg.toLowerCase().includes('api_key'))){
+      localStorage.removeItem('dd_gkey');KEY='';
+      throw new Error('Invalid API key. Please re-enter your Gemini API key.');
     }
-    if(data.error.code===429) throw new Error('Rate limit reached. Please wait a moment and try again.');
-    throw new Error(data.error.message||'AI error. Please try again.');
+    if(code===429||res.status===429){
+      if(mIdx<MODELS.length-1){await sleep(800);return gemini(contents,mIdx+1,0);}
+      if(attempt<3){
+        const wait=(attempt+1)*8000;
+        showErr('Rate limit hit — auto-retrying in '+(wait/1000)+'s...');
+        await sleep(wait);hideErr();
+        return gemini(contents,0,attempt+1);
+      }
+      throw new Error('Rate limit exceeded. Please wait 1 minute and try again.');
+    }
+    if(code===404||msg.includes('not found')){
+      if(mIdx<MODELS.length-1)return gemini(contents,mIdx+1,0);
+    }
+    if(code>=500&&attempt<2){await sleep(3000);return gemini(contents,mIdx,attempt+1);}
+    throw new Error(msg||'AI error. Please try again.');
   }
   const t=data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if(!t) throw new Error('Empty response. Please try again.');
+  if(!t){if(attempt<2){await sleep(2000);return gemini(contents,mIdx,attempt+1);}throw new Error('Empty response. Please try again.');}
   return t;
 }
 
